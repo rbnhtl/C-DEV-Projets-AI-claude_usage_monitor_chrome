@@ -1,6 +1,6 @@
 {
-  "name": "claude_usage_extension",
-  "displayName": "claude_usage_extension",
+  "name": "claude-monitor",
+  "displayName": "Claude Monitor",
   "version": "1.0.0",
   "author": "no one",
   "description": "",
