@@ -25,6 +25,17 @@ main {
   color: #888;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+.popup-title:hover {
+  color: #bbb;
+}
+
+.popup-title-icon {
+  font-size: 10px;
+  opacity: 0.6;
 }
 
 .refresh-btn {
@@ -141,6 +152,18 @@ main {
   color: #444;
   text-align: center;
   margin-top: 6px;
+}
+
+.next-update {
+  font-size: 10px;
+  color: #444;
+  text-align: center;
+  margin-top: 3px;
+}
+
+.next-update-countdown {
+  font-variant-numeric: tabular-nums;
+  color: #555;
 }
 
 .empty-state {

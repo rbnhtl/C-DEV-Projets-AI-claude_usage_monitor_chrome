@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react'
 import './Popup.css'
 
-function getColor(percent) {
-  if (percent > 50) return '#ef4444'
-  if (percent > 30) return '#8b5cf6'
-  if (percent > 20) return '#6b7280'
-  return '#22c55e'
+function getColor(percent, refWidth) {
+  if (refWidth === null) return '#6b7280'
+  const deviation = percent - refWidth
+  if (deviation > 30) return '#8b5cf6'
+  if (deviation > 10) return '#ef4444'
+  if (deviation < -10) return '#22c55e'
+  return '#6b7280'
 }
 
 const FR_DAYS = { lun: 1, mar: 2, mer: 3, jeu: 4, ven: 5, sam: 6, dim: 0 }
@@ -42,13 +44,12 @@ function computeStats(percent, resetLabel, totalMins) {
   const elapsed = Math.max(0, totalMins - remaining)
   const refWidth = Math.min(100, (elapsed / totalMins) * 100)
   if (elapsed < 5) return { refWidth, indicator: null }
-  const rate = percent / (elapsed / 60)
-  const refRate = (100 / totalMins) * 60
+  const deviation = percent - refWidth
   let indicator
-  if (rate > refRate * 1.5) indicator = { symbol: '↑↑', color: '#8b5cf6' }
-  else if (rate > refRate) indicator = { symbol: '↑', color: '#ef4444' }
-  else if (rate >= refRate * 0.75) indicator = { symbol: '—', color: '#6b7280' }
-  else indicator = { symbol: '↓', color: '#22c55e' }
+  if (deviation > 30) indicator = { symbol: '↑↑', color: '#8b5cf6' }
+  else if (deviation > 10) indicator = { symbol: '↑', color: '#ef4444' }
+  else if (deviation < -10) indicator = { symbol: '↓', color: '#22c55e' }
+  else indicator = { symbol: '—', color: '#6b7280' }
   return { refWidth, indicator }
 }
 
@@ -94,13 +95,13 @@ function Sparkline({ history }) {
           key={i}
           x1={p.x.toFixed(1)} y1={p.y.toFixed(1)}
           x2={pts[i + 1].x.toFixed(1)} y2={pts[i + 1].y.toFixed(1)}
-          stroke={getColor(p.v)}
+          stroke="#6b7280"
           strokeWidth="1.5"
           strokeLinecap="round"
         />
       ))}
       {/* Point courant */}
-      <circle cx={lastPt.x.toFixed(1)} cy={lastPt.y.toFixed(1)} r="2.5" fill={getColor(lastPt.v)} />
+      <circle cx={lastPt.x.toFixed(1)} cy={lastPt.y.toFixed(1)} r="2.5" fill="#6b7280" />
     </svg>
   )
 }
@@ -108,8 +109,8 @@ function Sparkline({ history }) {
 // ── UsageCard ─────────────────────────────────────────────────────────────────
 
 function UsageCard({ label, percent, resetLabel, totalMins, history }) {
-  const color = getColor(percent)
   const { refWidth, indicator } = computeStats(percent, resetLabel, totalMins)
+  const color = getColor(percent, refWidth)
 
   return (
     <div className="usage-card">
@@ -145,11 +146,23 @@ function UsageCard({ label, percent, resetLabel, totalMins, history }) {
 
 // ── Popup ─────────────────────────────────────────────────────────────────────
 
+const REFRESH_INTERVAL_MS = 2 * 60 * 1000
+
+function formatCountdown(ms) {
+  if (ms <= 0) return null
+  const totalSec = Math.ceil(ms / 1000)
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  return m > 0 ? `${m}:${String(s).padStart(2, '0')}` : `0:${String(s).padStart(2, '0')}`
+}
+
 export const Popup = () => {
   const [data, setData] = useState(null)
   const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [now, setNow] = useState(Date.now())
+  const [refreshStartedAt, setRefreshStartedAt] = useState(null)
 
   function loadData() {
     chrome.runtime.sendMessage({ type: 'GET_USAGE' }, (response) => {
@@ -161,23 +174,51 @@ export const Popup = () => {
 
   useEffect(() => { loadData() }, [])
 
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    const onMessage = (request) => {
+      if (request.type !== 'DATA_UPDATED') return
+      setRefreshStartedAt(null)
+      setRefreshing(false)
+      loadData()
+    }
+    chrome.runtime.onMessage.addListener(onMessage)
+    return () => chrome.runtime.onMessage.removeListener(onMessage)
+  }, [])
+
+  useEffect(() => {
+    if (!refreshing) return
+    const timeout = setTimeout(() => setRefreshing(false), 30_000)
+    return () => clearTimeout(timeout)
+  }, [refreshing])
+
   function handleRefresh() {
     setRefreshing(true)
-    chrome.tabs.query({ url: 'https://claude.ai/*' }, (tabs) => {
-      if (tabs.length === 0) { setRefreshing(false); return }
-      for (const tab of tabs) {
-        chrome.tabs.sendMessage(tab.id, { type: 'FORCE_REFRESH' }).catch(() => {})
-      }
-      setTimeout(() => { loadData(); setRefreshing(false) }, 2000)
-    })
+    setRefreshStartedAt(Date.now())
+    chrome.runtime.sendMessage({ type: 'MANUAL_REFRESH' })
   }
 
-  const updatedMinutesAgo = data ? Math.round((Date.now() - data.fetchedAt) / 60000) : null
+  const updatedMinutesAgo = data ? Math.round((now - data.fetchedAt) / 60000) : null
+  const baseAt = refreshStartedAt ?? data?.fetchedAt ?? null
+  const nextUpdateMs = baseAt !== null ? (baseAt + REFRESH_INTERVAL_MS) - now : null
+  const countdown = nextUpdateMs !== null ? formatCountdown(nextUpdateMs) : null
 
   return (
     <main>
       <div className="popup-header">
-        <span className="popup-title">Utilisation Claude</span>
+        <a
+          className="popup-title"
+          href="https://claude.ai/settings/usage"
+          target="_blank"
+          rel="noreferrer"
+          title="Voir la page d'utilisation"
+        >
+          Utilisation Claude <span className="popup-title-icon">↗</span>
+        </a>
         <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing} title="Actualiser">
           {refreshing ? '⟳' : '↻'}
         </button>
@@ -209,6 +250,12 @@ export const Popup = () => {
               Mis à jour il y a {updatedMinutesAgo < 1 ? "moins d'une" : updatedMinutesAgo} min
             </div>
           )}
+          <div className="next-update">
+            {countdown
+              ? <>Prochaine maj dans <span className="next-update-countdown">{countdown}</span></>
+              : 'Mise à jour en cours…'
+            }
+          </div>
         </>
       )}
     </main>
