@@ -10,9 +10,6 @@ export default defineConfig(() => {
       emptyOutDir: true,
       outDir: 'build',
       rollupOptions: {
-        input: {
-          offscreen: 'offscreen.html',
-        },
         output: {
           chunkFileNames: 'assets/chunk-[hash].js',
         },
