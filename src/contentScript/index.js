@@ -23,10 +23,15 @@ if (window !== window.top && window.location.pathname.includes('/settings/usage'
     }
   }
 
+  function dispatchData(data) {
+    window.parent.postMessage({ type: 'CLAUDE_USAGE_FROM_IFRAME', data }, 'https://claude.ai')
+    chrome.runtime.sendMessage({ type: 'USAGE_UPDATE', data }).catch(() => {})
+  }
+
   function sendWhenReady() {
     const data = extractUsageData()
     if (data) {
-      window.parent.postMessage({ type: 'CLAUDE_USAGE_FROM_IFRAME', data }, 'https://claude.ai')
+      dispatchData(data)
       return
     }
 
@@ -34,7 +39,7 @@ if (window !== window.top && window.location.pathname.includes('/settings/usage'
       const d = extractUsageData()
       if (d) {
         observer.disconnect()
-        window.parent.postMessage({ type: 'CLAUDE_USAGE_FROM_IFRAME', data: d }, 'https://claude.ai')
+        dispatchData(d)
       }
     })
     const observeTarget = document.body ?? document.documentElement
@@ -53,11 +58,13 @@ if (window !== window.top && window.location.pathname.includes('/settings/usage'
 } else if (window === window.top) {
   // ── Main page logic ─────────────────────────────────────────────────────────
 
-  function getColor(percent) {
-    if (percent > 50) return '#ef4444'
-    if (percent > 30) return '#8b5cf6'
-    if (percent > 20) return '#6b7280'
-    return '#22c55e'
+  function getColor(percent, refWidth) {
+    if (refWidth === null) return '#6b7280'
+    const deviation = percent - refWidth
+    if (deviation > 30) return '#8b5cf6'
+    if (deviation > 10) return '#ef4444'
+    if (deviation < -10) return '#22c55e'
+    return '#6b7280'
   }
 
   // ── Rate computation ─────────────────────────────────────────────────────────
@@ -89,19 +96,25 @@ if (window !== window.top && window.location.pathname.includes('/settings/usage'
     return null
   }
 
+  function computeRefWidth(resetLabel, totalMins) {
+    const remaining = parseRemainingMinutes(resetLabel)
+    if (remaining === null) return null
+    const elapsed = Math.max(0, totalMins - remaining)
+    return Math.min(100, (elapsed / totalMins) * 100)
+  }
+
   function computeStats(percent, resetLabel, totalMins) {
     const remaining = parseRemainingMinutes(resetLabel)
     if (remaining === null) return { refWidth: null, indicator: null }
     const elapsed = Math.max(0, totalMins - remaining)
     const refWidth = Math.min(100, (elapsed / totalMins) * 100)
     if (elapsed < 5) return { refWidth, indicator: null }
-    const rate = percent / (elapsed / 60)            // taux réel en %/h
-    const refRate = (100 / totalMins) * 60           // taux de référence en %/h pour cette fenêtre
+    const deviation = percent - refWidth
     let indicator
-    if (rate > refRate * 1.5) indicator = { symbol: '↑↑', color: '#8b5cf6' }
-    else if (rate > refRate) indicator = { symbol: '↑', color: '#ef4444' }
-    else if (rate >= refRate * 0.75) indicator = { symbol: '—', color: '#6b7280' }
-    else indicator = { symbol: '↓', color: '#22c55e' }
+    if (deviation > 30) indicator = { symbol: '↑↑', color: '#8b5cf6' }
+    else if (deviation > 10) indicator = { symbol: '↑', color: '#ef4444' }
+    else if (deviation < -10) indicator = { symbol: '↓', color: '#22c55e' }
+    else indicator = { symbol: '—', color: '#6b7280' }
     return { refWidth, indicator }
   }
 
@@ -175,8 +188,8 @@ if (window !== window.top && window.location.pathname.includes('/settings/usage'
     `
 
     function row(label, percent, resetLabel, totalMins) {
-      const color = getColor(percent)
       const { refWidth, indicator } = computeStats(percent, resetLabel, totalMins)
+      const color = getColor(percent, refWidth)
 
       const refBar = refWidth !== null
         ? `<div style="position:absolute;top:0;left:0;height:100%;width:${refWidth}%;background:#4a4a4a;border-radius:4px;"></div>`
@@ -224,7 +237,7 @@ if (window !== window.top && window.location.pathname.includes('/settings/usage'
     wrapper.style.cssText = 'display:inline-flex;align-items:center'
 
     const badge = document.createElement('button')
-    const color = getColor(data.session.percent)
+    const color = getColor(data.session.percent, computeRefWidth(data.session.resetLabel, 5 * 60))
     badge.style.cssText = `
       display:inline-flex;align-items:center;gap:3px;
       padding:3px 8px;border-radius:6px;
@@ -252,7 +265,7 @@ if (window !== window.top && window.location.pathname.includes('/settings/usage'
     lastData = data
     const badge = document.querySelector(`#${WIDGET_ID} button`)
     if (!badge) return
-    const color = getColor(data.session.percent)
+    const color = getColor(data.session.percent, computeRefWidth(data.session.resetLabel, 5 * 60))
     badge.textContent = `${data.session.percent}%`
     badge.style.color = color
     badge.style.borderColor = `${color}44`
@@ -287,8 +300,11 @@ if (window !== window.top && window.location.pathname.includes('/settings/usage'
       const data = await fetchViaIframe()
       if (!data) return
       lastData = data
-      chrome.storage.local.set({ usageData: data })
-      chrome.runtime.sendMessage({ type: 'USAGE_UPDATE', data }).catch(() => {})
+      // Sur /settings/usage l'iframe envoie déjà USAGE_UPDATE, pas besoin de le renvoyer
+      if (!window.location.pathname.includes('/settings/usage')) {
+        chrome.storage.local.set({ usageData: data })
+        chrome.runtime.sendMessage({ type: 'USAGE_UPDATE', data }).catch(() => {})
+      }
       tryInjectWidget(data)
     } catch {
       // Fail silently
@@ -313,7 +329,7 @@ if (window !== window.top && window.location.pathname.includes('/settings/usage'
     })
     observer.observe(document.body, { childList: true, subtree: true })
 
-    setInterval(refresh, 5 * 60 * 1000)
+    setInterval(refresh, 2 * 60 * 1000)
   }
 
   if (document.readyState === 'loading') {

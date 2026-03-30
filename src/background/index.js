@@ -1,18 +1,28 @@
 const THRESHOLDS = [50, 70, 90]
 const HISTORY_MAX = 60 // 60 × 5 min = 5h de données
 
-function getColor(percent) {
-  if (percent > 50) return '#ef4444'
-  if (percent > 30) return '#8b5cf6'
-  if (percent > 20) return '#6b7280'
-  return '#22c55e'
+function computeRefWidth(resetLabel, totalMins) {
+  const remaining = parseRemainingMinutes(resetLabel)
+  if (remaining === null) return null
+  const elapsed = Math.max(0, totalMins - remaining)
+  return Math.min(100, (elapsed / totalMins) * 100)
+}
+
+function getColor(percent, refWidth) {
+  if (refWidth === null) return '#6b7280'
+  const deviation = percent - refWidth
+  if (deviation > 30) return '#8b5cf6'
+  if (deviation > 10) return '#ef4444'
+  if (deviation < -10) return '#22c55e'
+  return '#6b7280'
 }
 
 function updateBadge(data) {
   const percent = data?.session?.percent
   if (percent == null) return
+  const refWidth = computeRefWidth(data.session.resetLabel, 5 * 60)
   chrome.action.setBadgeText({ text: `${percent}%` })
-  chrome.action.setBadgeBackgroundColor({ color: getColor(percent) })
+  chrome.action.setBadgeBackgroundColor({ color: getColor(percent, refWidth) })
 }
 
 function sendNotification(id, title, message) {
@@ -133,21 +143,68 @@ async function checkNotifications(newData) {
 
 // ── Alarm & tabs ──────────────────────────────────────────────────────────────
 
+// Script injecté dans un onglet claude.ai pour fetcher l'usage via iframe (même origine)
+function injectFetchScript() {
+  if (document.getElementById('__claude-usage-bg-iframe')) return
+  const iframe = document.createElement('iframe')
+  iframe.id = '__claude-usage-bg-iframe'
+  iframe.src = 'https://claude.ai/settings/usage'
+  iframe.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;top:-200px;left:-200px'
+  document.body.appendChild(iframe)
+  const timer = setTimeout(() => {
+    iframe.remove()
+    window.removeEventListener('message', handler)
+  }, 20_000)
+  function handler(e) {
+    if (e.origin !== 'https://claude.ai') return
+    if (e.data?.type !== 'CLAUDE_USAGE_FROM_IFRAME') return
+    window.removeEventListener('message', handler)
+    clearTimeout(timer)
+    iframe.remove()
+    chrome.runtime.sendMessage({ type: 'USAGE_UPDATE', data: e.data.data })
+  }
+  window.addEventListener('message', handler)
+}
+
 async function notifyClaudeTabs() {
   const tabs = await chrome.tabs.query({ url: 'https://claude.ai/*' })
-  for (const tab of tabs) {
-    chrome.tabs.sendMessage(tab.id, { type: 'FORCE_REFRESH' }).catch(() => {})
+  if (tabs.length === 0) return
+
+  const results = await Promise.all(
+    tabs.map(async (tab) => {
+      try {
+        await chrome.tabs.sendMessage(tab.id, { type: 'FORCE_REFRESH' })
+        return true
+      } catch {
+        return false
+      }
+    })
+  )
+
+  if (results.every((r) => r === false)) {
+    // Content script non connecté : injecter directement dans le premier onglet
+    chrome.scripting.executeScript({
+      target: { tabId: tabs[0].id },
+      world: 'ISOLATED',
+      func: injectFetchScript,
+    }).catch(() => {})
   }
 }
 
 function ensureAlarm() {
   chrome.alarms.get('usage-refresh', (alarm) => {
-    if (!alarm) chrome.alarms.create('usage-refresh', { periodInMinutes: 5 })
+    if (!alarm) chrome.alarms.create('usage-refresh', { periodInMinutes: 2 })
   })
 }
 
-chrome.runtime.onInstalled.addListener(ensureAlarm)
-chrome.runtime.onStartup.addListener(ensureAlarm)
+chrome.runtime.onInstalled.addListener(() => {
+  ensureAlarm()
+  notifyClaudeTabs()
+})
+chrome.runtime.onStartup.addListener(() => {
+  ensureAlarm()
+  notifyClaudeTabs()
+})
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'usage-refresh') notifyClaudeTabs()
@@ -166,9 +223,19 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   if (request.type === 'USAGE_UPDATE') {
-    checkNotifications(request.data)
-    chrome.storage.local.set({ usageData: request.data })
-    updateBadge(request.data)
+    const incoming = request.data?.fetchedAt
+    chrome.storage.local.get(['usageData'], ({ usageData }) => {
+      if (usageData?.fetchedAt === incoming) return
+      checkNotifications(request.data)
+      chrome.storage.local.set({ usageData: request.data })
+      updateBadge(request.data)
+      chrome.runtime.sendMessage({ type: 'DATA_UPDATED' }).catch(() => {})
+    })
+    return
+  }
+
+  if (request.type === 'MANUAL_REFRESH') {
+    notifyClaudeTabs()
     return
   }
 

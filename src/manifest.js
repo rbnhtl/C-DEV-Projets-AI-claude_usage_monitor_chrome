@@ -41,6 +41,6 @@ export default defineManifest({
       matches: [],
     },
   ],
-  permissions: ['sidePanel', 'storage', 'alarms', 'tabs', 'notifications'],
+  permissions: ['sidePanel', 'storage', 'alarms', 'tabs', 'notifications', 'scripting'],
   host_permissions: ['https://claude.ai/*'],
 })
