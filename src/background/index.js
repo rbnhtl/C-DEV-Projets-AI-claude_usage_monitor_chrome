@@ -1,3 +1,5 @@
+import { getActiveWorkSlot, computeWorkRefWidth } from '../shared/workSchedule.js'
+
 const THRESHOLDS = [50, 70, 90]
 const HISTORY_MAX = 60 // 60 × 5 min = 5h de données
 
@@ -17,10 +19,20 @@ function getColor(percent, refWidth) {
   return '#6b7280'
 }
 
-function updateBadge(data) {
+async function updateBadge(data) {
   const percent = data?.session?.percent
   if (percent == null) return
-  const refWidth = computeRefWidth(data.session.resetLabel, 5 * 60)
+
+  let refWidth
+  const stored = await chrome.storage.sync.get(['workSchedule'])
+  const workSlot = getActiveWorkSlot(stored.workSchedule ?? null)
+  if (workSlot) {
+    const sessionRemaining = parseRemainingMinutes(data.session.resetLabel)
+    refWidth = computeWorkRefWidth(sessionRemaining, workSlot.remainingMins)
+  } else {
+    refWidth = computeRefWidth(data.session.resetLabel, 5 * 60)
+  }
+
   chrome.action.setBadgeText({ text: `${percent}%` })
   chrome.action.setBadgeBackgroundColor({ color: getColor(percent, refWidth) })
 }

@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import './Popup.css'
+import { getActiveWorkSlot, computeWorkRefWidth } from '../shared/workSchedule.js'
 
 function getColor(percent, refWidth) {
   if (refWidth === null) return '#6b7280'
@@ -106,7 +107,7 @@ function Sparkline({ history }) {
   )
 }
 
-// ── UsageCard ─────────────────────────────────────────────────────────────────
+// ── UsageCard (session / hebdomadaire) ────────────────────────────────────────
 
 function UsageCard({ label, percent, resetLabel, totalMins, history }) {
   const { refWidth, indicator } = computeStats(percent, resetLabel, totalMins)
@@ -144,6 +145,60 @@ function UsageCard({ label, percent, resetLabel, totalMins, history }) {
   )
 }
 
+// ── WorkUsageCard (demi-journée de travail) ───────────────────────────────────
+
+function WorkUsageCard({ percent, sessionResetLabel, workSlot }) {
+  const SESSION_TOTAL_MINS = 5 * 60
+  const sessionRemaining = parseRemainingMinutes(sessionResetLabel)
+  const refWidth = computeWorkRefWidth(sessionRemaining, workSlot.remainingMins, SESSION_TOTAL_MINS)
+  const color = getColor(percent, refWidth)
+
+  const sessionElapsed = sessionRemaining !== null ? Math.max(0, SESSION_TOTAL_MINS - sessionRemaining) : 0
+  let indicator = null
+  if (refWidth !== null && sessionElapsed >= 5) {
+    const deviation = percent - refWidth
+    if (deviation > 30) indicator = { symbol: '↑↑', color: '#8b5cf6' }
+    else if (deviation > 10) indicator = { symbol: '↑', color: '#ef4444' }
+    else if (deviation < -10) indicator = { symbol: '↓', color: '#22c55e' }
+    else indicator = { symbol: '—', color: '#6b7280' }
+  }
+
+  const wMins = Math.round(workSlot.remainingMins)
+  const wH = Math.floor(wMins / 60)
+  const wM = wMins % 60
+  const workLabel = wH > 0
+    ? `Fin dans ${wH}h${wM > 0 ? ` ${wM} min` : ''}`
+    : `Fin dans ${wM} min`
+
+  const slotLabel = workSlot.slotName === 'morning' ? 'Matin' : 'Après-midi'
+
+  return (
+    <div className="usage-card usage-card--work">
+      <div className="usage-card-header">
+        <span className="usage-label">{slotLabel} · fin {workSlot.label}</span>
+        <span className="usage-percent" style={{ color }}>{percent}%</span>
+      </div>
+      <div className="usage-bar-wrapper">
+        <div className="usage-bar-track">
+          {refWidth !== null && <div className="usage-bar-ref" style={{ width: `${refWidth}%` }} />}
+          <div className="usage-bar-fill" style={{ width: `${Math.min(percent, 100)}%`, background: color }} />
+        </div>
+        {refWidth !== null && (
+          <div className="usage-bar-tick" style={{ left: `${refWidth}%` }} />
+        )}
+      </div>
+      <div className="usage-reset">
+        {workLabel}
+        {indicator && (
+          <span style={{ color: indicator.color, fontWeight: 700, marginLeft: 5 }}>
+            {indicator.symbol}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Popup ─────────────────────────────────────────────────────────────────────
 
 const REFRESH_INTERVAL_MS = 2 * 60 * 1000
@@ -163,6 +218,7 @@ export const Popup = () => {
   const [refreshing, setRefreshing] = useState(false)
   const [now, setNow] = useState(Date.now())
   const [refreshStartedAt, setRefreshStartedAt] = useState(null)
+  const [workSchedule, setWorkSchedule] = useState(null)
 
   function loadData() {
     chrome.runtime.sendMessage({ type: 'GET_USAGE' }, (response) => {
@@ -172,7 +228,12 @@ export const Popup = () => {
     })
   }
 
-  useEffect(() => { loadData() }, [])
+  useEffect(() => {
+    loadData()
+    chrome.storage.sync.get(['workSchedule'], (result) => {
+      setWorkSchedule(result.workSchedule ?? null)
+    })
+  }, [])
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000)
@@ -196,11 +257,27 @@ export const Popup = () => {
     return () => clearTimeout(timeout)
   }, [refreshing])
 
+  // Synchronise le planning si modifié depuis la page options
+  useEffect(() => {
+    function onStorageChange(changes) {
+      if (changes.workSchedule) {
+        setWorkSchedule(changes.workSchedule.newValue ?? null)
+      }
+    }
+    chrome.storage.sync.onChanged.addListener(onStorageChange)
+    return () => chrome.storage.sync.onChanged.removeListener(onStorageChange)
+  }, [])
+
   function handleRefresh() {
     setRefreshing(true)
     setRefreshStartedAt(Date.now())
     chrome.runtime.sendMessage({ type: 'MANUAL_REFRESH' })
   }
+
+  const workSlot = useMemo(
+    () => getActiveWorkSlot(workSchedule, new Date(now)),
+    [workSchedule, now]
+  )
 
   const updatedMinutesAgo = data ? Math.round((now - data.fetchedAt) / 60000) : null
   const baseAt = refreshStartedAt ?? data?.fetchedAt ?? null
@@ -219,9 +296,18 @@ export const Popup = () => {
         >
           Utilisation Claude <span className="popup-title-icon">↗</span>
         </a>
-        <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing} title="Actualiser">
-          {refreshing ? '⟳' : '↻'}
-        </button>
+        <div className="popup-header-actions">
+          <button
+            className="settings-btn"
+            onClick={() => chrome.runtime.openOptionsPage()}
+            title="Paramètres du planning"
+          >
+            ⚙
+          </button>
+          <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing} title="Actualiser">
+            {refreshing ? '⟳' : '↻'}
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -232,6 +318,13 @@ export const Popup = () => {
         </div>
       ) : (
         <>
+          {workSlot && (
+            <WorkUsageCard
+              percent={data.session.percent}
+              sessionResetLabel={data.session.resetLabel}
+              workSlot={workSlot}
+            />
+          )}
           <UsageCard
             label="Session actuelle"
             percent={data.session.percent}

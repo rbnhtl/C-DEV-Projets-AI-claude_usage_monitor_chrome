@@ -19,6 +19,12 @@ main {
   margin-bottom: 14px;
 }
 
+.popup-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .popup-title {
   font-size: 13px;
   font-weight: 600;
@@ -36,6 +42,22 @@ main {
 .popup-title-icon {
   font-size: 10px;
   opacity: 0.6;
+}
+
+.settings-btn {
+  background: none;
+  border: none;
+  color: #444;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: color 0.2s;
+}
+
+.settings-btn:hover {
+  color: #999;
 }
 
 .refresh-btn {
@@ -71,6 +93,12 @@ main {
   border-radius: 8px;
   padding: 12px;
   margin-bottom: 8px;
+}
+
+.usage-card--work {
+  background: #181820;
+  border-color: #2d2b3d;
+  border-left: 2px solid #4a4580;
 }
 
 .usage-card-header {
