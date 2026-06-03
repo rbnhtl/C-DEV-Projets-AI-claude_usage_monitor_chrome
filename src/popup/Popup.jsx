@@ -279,6 +279,12 @@ export const Popup = () => {
     [workSchedule, now]
   )
 
+  // La période ne régit pas la coloration si la session se réinitialise avant sa fin
+  const sessionRemaining = data ? parseRemainingMinutes(data.session.resetLabel) : null
+  const activeWorkSlot = workSlot && (sessionRemaining === null || sessionRemaining >= workSlot.remainingMins)
+    ? workSlot
+    : null
+
   const updatedMinutesAgo = data ? Math.round((now - data.fetchedAt) / 60000) : null
   const baseAt = refreshStartedAt ?? data?.fetchedAt ?? null
   const nextUpdateMs = baseAt !== null ? (baseAt + REFRESH_INTERVAL_MS) - now : null
@@ -318,11 +324,11 @@ export const Popup = () => {
         </div>
       ) : (
         <>
-          {workSlot && (
+          {activeWorkSlot && (
             <WorkUsageCard
               percent={data.session.percent}
               sessionResetLabel={data.session.resetLabel}
-              workSlot={workSlot}
+              workSlot={activeWorkSlot}
             />
           )}
           <UsageCard

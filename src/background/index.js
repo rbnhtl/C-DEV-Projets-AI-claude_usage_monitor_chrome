@@ -28,7 +28,12 @@ async function updateBadge(data) {
   const workSlot = getActiveWorkSlot(stored.workSchedule ?? null)
   if (workSlot) {
     const sessionRemaining = parseRemainingMinutes(data.session.resetLabel)
-    refWidth = computeWorkRefWidth(sessionRemaining, workSlot.remainingMins)
+    // Si la session se réinitialise avant la fin de la période, ne pas utiliser la période pour la coloration
+    if (sessionRemaining !== null && sessionRemaining < workSlot.remainingMins) {
+      refWidth = computeRefWidth(data.session.resetLabel, 5 * 60)
+    } else {
+      refWidth = computeWorkRefWidth(sessionRemaining, workSlot.remainingMins)
+    }
   } else {
     refWidth = computeRefWidth(data.session.resetLabel, 5 * 60)
   }
